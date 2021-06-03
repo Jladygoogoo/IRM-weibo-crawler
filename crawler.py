@@ -48,9 +48,11 @@ class Crawler:
 				self.posts_details = json.load(f)
 		else:
 			self.posts_details = []
-		if not os.path.exists('data/{}'.format(ouname)):
-			os.makedirs('data/{}'.format(ouname))
-		self.posts_fileobj = open('data/{}/posts.json'.format(self.ouname), 'w') # 在__del__方法内使用open()函数会报错
+			self.posts_fileobj = open('data/{}/posts.json'.format(self.ouname), 'w') # 在__del__方法内使用open()函数会报错
+		# 创建数据文件夹
+		if not os.path.exists('data/{}/comments'.format(ouname)):
+			os.makedirs('data/{}/comments'.format(ouname))
+		
 
 
 	def get_search_page_count(self):
@@ -67,17 +69,19 @@ class Crawler:
 			i += 1
 
 
-	async def get_page_async(self, client, url, format='text'):
+	async def get_page_async(self, url, format='text'):
 		'''
 		异步获取页面内容。
 		'''
-		async with client.get(url) as res:
-			if format=='text':
-				data = await res.text()
-			elif format=='json':
-				data = await res.json()
-			time.sleep(1)
-		return data
+		async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(
+			limit=16, ssl=False, keepalive_timeout=120), headers=headers, cookies=cookies) as client:
+			async with client.get(url) as res:
+				if format=='text':
+					data = await res.text()
+				elif format=='json':
+					data = await res.json()
+				time.sleep(1)
+			return data
 
 
 	def get_page(self, url, format='text'):
@@ -130,16 +134,14 @@ class Crawler:
 		'''
 		获得单个数据接口上的所有post_id
 		'''
-		async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(
-			limit=16, ssl=False, keepalive_timeout=20), headers=headers, cookies=cookies) as client:
-				page_data = await self.get_page_async(client, url, format=format)
-				if page_data:
-					try:
-						page_content = preprocessor(page_data)
-						posts_id = parse_search_page(page_content)
-						self.posts_id.extend(posts_id)
-					except:
-						print("Failed to get post-ids. [url:{}]".format(url))
+		page_data = await self.get_page_async(url, format=format)
+		if page_data:
+			try:
+				page_content = preprocessor(page_data)
+				posts_id = parse_search_page(page_content)
+				self.posts_id.extend(posts_id)
+			except:
+				print("Failed to get post-ids. [url:{}]".format(url))
 
 
 
@@ -153,7 +155,7 @@ class Crawler:
 			post_details = parse_post_details(page_content)
 			post_details.update({'post_id': post_id, 'ouid': self.ouid})
 			self.posts_details.append(post_details)
-			# print(post_details)
+			print("successfuly crawled post details. mid:{}".format(post_details['mid']))
 			return post_details['mid']
 		except:
 			print("Failed to get post details. [post-id: {}]".format(post_id))
@@ -163,6 +165,12 @@ class Crawler:
 		'''
 		获取单个帖子的评论数据
 		'''
+		# 判断本地文件中是否存在（已爬取）
+		crawled_files = os.listdir('data/{}/comments'.format(self.ouname))
+		if 'mid_{}.json'.format(mid) in crawled_files:
+			print("already saved. mid: {}".format(mid))
+			return 
+
 		# 从评论数据接口中得到总的评论页数
 		page_data = self.get_page('https://weibo.com/aj/v6/comment/big?ajwvr=6&id={}&page=1'.format(mid), format='json')
 		total_pages = int(page_data['data']['page']['totalpage'])
@@ -173,16 +181,14 @@ class Crawler:
 		comments_headers = headers
 		comments_headers.update({'Referer': url})
 		for url in target_urls:
-			async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(
-				limit=16, ssl=False, keepalive_timeout=64), headers=comments_headers, cookies=cookies) as client: # 评论可能比较多，这里的keepalive_timeout设置长一点
-					page_data = await self.get_page_async(client, url, format='json')
-					if page_data:
-						try:
-							page_content = page_data['data']['html']
-							page_comments = parse_comments_page(page_content)
-							comments.extend(page_comments)
-						except:
-							print("Failed to get comments. [mid: {}]".format(mid))
+			page_data = await self.get_page_async(url, format='json')
+			if page_data:
+				try:
+					page_content = page_data['data']['html']
+					page_comments = parse_comments_page(page_content)
+					comments.extend(page_comments)
+				except:
+					print("Failed to get comments. [mid: {}]".format(mid))
 		
 		# 将数据写入本地
 		filepath = 'data/{}/comments/mid_{}.json'.format(self.ouname, mid)
